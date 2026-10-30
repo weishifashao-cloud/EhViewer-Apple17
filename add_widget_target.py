@@ -320,7 +320,7 @@ cfg_debug = f"""\t\t{ID_CFG_DEBUG} /* Debug */ = {{
 \t\t\t\tINFOPLIST_FILE = EhDownloadWidget/Info.plist;
 \t\t\t\tINFOPLIST_KEY_CFBundleDisplayName = EhDownloadWidget;
 \t\t\t\tINFOPLIST_KEY_NSHumanReadableCopyright = "";
-\t\t\t\tIPHONEOS_DEPLOYMENT_TARGET = 18.0;
+\t\t\t\tIPHONEOS_DEPLOYMENT_TARGET = 17.0;
 \t\t\t\tLD_RUNPATH_SEARCH_PATHS = (
 \t\t\t\t\t"$(inherited)",
 \t\t\t\t\t"@executable_path/Frameworks",
@@ -353,7 +353,7 @@ cfg_release = f"""\t\t{ID_CFG_RELEASE} /* Release */ = {{
 \t\t\t\tINFOPLIST_FILE = EhDownloadWidget/Info.plist;
 \t\t\t\tINFOPLIST_KEY_CFBundleDisplayName = EhDownloadWidget;
 \t\t\t\tINFOPLIST_KEY_NSHumanReadableCopyright = "";
-\t\t\t\tIPHONEOS_DEPLOYMENT_TARGET = 18.0;
+\t\t\t\tIPHONEOS_DEPLOYMENT_TARGET = 17.0;
 \t\t\t\tLD_RUNPATH_SEARCH_PATHS = (
 \t\t\t\t\t"$(inherited)",
 \t\t\t\t\t"@executable_path/Frameworks",

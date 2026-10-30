@@ -16,6 +16,7 @@
 #if os(iOS)
 
 import SwiftUI
+import UIKit
 
 extension Notification.Name {
     /// 重复点击已选中的标签时发出，携带 userInfo["tab"] = 标签的 rawValue
@@ -144,23 +145,174 @@ extension View {
     }
 }
 
+/// iOS 17 上的滚动偏移探针，复现 `onScrollGeometryChange` 给出的
+/// `contentOffset.y + contentInsets.top`（顶部为 0，向下滚为正）。
+///
+/// 挂在滚动容器的 background 上，顺着 UIKit 视图树找到底层的 UIScrollView
+/// （`List` 背后是 UICollectionView / UITableView，本身也是 UIScrollView），
+/// 再用 KVO 观察 `contentOffset`。这样调用方不必给滚动容器起坐标空间名，
+/// `ehTabBarAutoHide()` 挂在哪里就还在哪里。
+///
+/// iOS 18 及以上不经过这里，仍走 `onScrollGeometryChange`。
+private struct EhScrollOffsetProbe: UIViewRepresentable {
+    /// 偏移变化回调。刚绑定到滚动视图时会以 `isInitial == true` 回调一次，
+    /// 调用方只应借此校准基线，不要据此判断滚动方向。
+    var onChange: (CGFloat, Bool) -> Void
+
+    func makeUIView(context: Context) -> ProbeView {
+        let view = ProbeView()
+        view.onChange = onChange
+        return view
+    }
+
+    func updateUIView(_ uiView: ProbeView, context: Context) {
+        uiView.onChange = onChange
+    }
+
+    final class ProbeView: UIView {
+        var onChange: ((CGFloat, Bool) -> Void)?
+        private var observation: NSKeyValueObservation?
+        private weak var target: UIScrollView?
+        private var lookups = 0
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if window == nil {
+                observation = nil
+                target = nil
+                lookups = 0
+            } else {
+                attach()
+            }
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            attach()
+        }
+
+        /// 已绑定且滚动视图还在窗口上就不再重新查找：长列表每次布局都遍历
+        /// 一遍视图树（含全部 cell）代价太高。
+        private func attach() {
+            if let target, target.window != nil { return }
+
+            guard let scrollView = locateScrollView() else {
+                // SwiftUI 是逐个装子视图的，background 可能先于滚动视图就位，
+                // 而 1×1 的探针之后不会再收到 layoutSubviews。这里补几轮重试，
+                // 仍找不到就放弃，不要无休止地排队。
+                guard lookups < 5 else { return }
+                lookups += 1
+                DispatchQueue.main.async { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        self.attach()
+                    }
+                }
+                return
+            }
+
+            lookups = 0
+            observation = nil
+            target = scrollView
+
+            observation = scrollView.observe(\.contentOffset, options: [.new]) { [weak self] _, _ in
+                // 必须异步：KVO 回调可能发生在 SwiftUI 布局过程中，
+                // 同步写 @Observable 状态会触发 "Modifying state during view update"。
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        self.report(isInitial: false)
+                    }
+                }
+            }
+            // 绑定时补一次基线：视图带着已有滚动位置重新出现时，
+            // 不能拿「上一次留下的偏移」当基准去算位移。
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.report(isInitial: true)
+                }
+            }
+        }
+
+        private func report(isInitial: Bool) {
+            guard let target else { return }
+            onChange?(target.contentOffset.y + target.adjustedContentInset.top, isInitial)
+        }
+
+        /// 最近的、子树里有滚动视图的祖先。
+        ///
+        /// background 挂上去的视图可能落在 UIScrollView 内部，也可能与它平级，
+        /// SwiftUI 对 List / ScrollView 的处理并不保证是哪一种，所以先看祖先
+        /// 本身是不是滚动视图，再到它的子树里找。
+        ///
+        /// 只往上找 6 层：再往外就会摸到导航容器，容易绑到上一页或别的标签页的
+        /// 滚动视图上。找不到就放弃本轮，宁可导航条不自动收起，也不要乱收起。
+        private func locateScrollView() -> UIScrollView? {
+            var node: UIView? = superview
+            var depth = 0
+            while let current = node, depth < 6 {
+                if let scrollView = current as? UIScrollView { return scrollView }
+                if let scrollView = current.ehFirstScrollView() { return scrollView }
+                node = current.superview
+                depth += 1
+            }
+            return nil
+        }
+    }
+}
+
+private extension UIView {
+    func ehFirstScrollView() -> UIScrollView? {
+        for subview in subviews {
+            if let scrollView = subview as? UIScrollView { return scrollView }
+            if let found = subview.ehFirstScrollView() { return found }
+        }
+        return nil
+    }
+}
+
 private struct EhTabBarAutoHideModifier: ViewModifier {
     private var visibility: EhTabBarVisibility { .shared }
     @State private var lastOffset: CGFloat = 0
 
+    @ViewBuilder
     func body(content: Content) -> some View {
-        content.onScrollGeometryChange(for: CGFloat.self) { geo in
-            geo.contentOffset.y + geo.contentInsets.top
-        } action: { _, offset in
-            let delta = offset - lastOffset
-            guard abs(delta) > 12 else { return }
-            lastOffset = offset
-
-            if offset < 40 {
-                visibility.hiddenByScroll = false
-            } else {
-                visibility.hiddenByScroll = delta > 0
+        if #available(iOS 18.0, *) {
+            content.onScrollGeometryChange(for: CGFloat.self) { geo in
+                geo.contentOffset.y + geo.contentInsets.top
+            } action: { _, offset in
+                handle(offset, isInitial: false)
             }
+        } else {
+            // iOS 17：用探针复现同一份偏移语义。`*` 表示其他平台恒可用，
+            // macOS 26.2 会走上面的分支，Mac 端手感不变。
+            // 待 iOS 17 份额低到可以放弃时，这个分支与 EhScrollOffsetProbe 一起删掉。
+            content.background(
+                EhScrollOffsetProbe { offset, isInitial in
+                    handle(offset, isInitial: isInitial)
+                }
+                .frame(width: 1, height: 1)
+                .allowsHitTesting(false)
+            )
+        }
+    }
+
+    private func handle(_ offset: CGFloat, isInitial: Bool) {
+        guard !isInitial else {
+            // 刚绑上滚动视图：只校准基线，不判断方向。
+            lastOffset = offset
+            return
+        }
+
+        let delta = offset - lastOffset
+        guard abs(delta) > 12 else { return }
+        lastOffset = offset
+
+        if offset < 40 {
+            visibility.hiddenByScroll = false
+        } else {
+            visibility.hiddenByScroll = delta > 0
         }
     }
 }

@@ -2,6 +2,24 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/) 规范。
 
+## [未发布]
+
+### 📱 兼容性
+
+- **iOS / iPadOS 最低版本从 18.0 降到 17.0** — 8 处 `IPHONEOS_DEPLOYMENT_TARGET`
+  全部下调（主 App / Tests / UITests / EhDownloadWidget 各自的 Debug + Release），
+  Widget 扩展与主 App 对齐，避免安装时的版本一致性校验告警。
+  `Packages/` 下各包本就声明 `.iOS(.v17)`，未改动；`MACOSX_DEPLOYMENT_TARGET` 与
+  `XROS_DEPLOYMENT_TARGET` 保持 26.2
+- **浮动 TabBar 的滚动隐藏补上 iOS 17 降级路径** — 新增 `EhScrollOffsetProbe`
+  （`UIViewRepresentable` + KVO 观察 `UIScrollView.contentOffset`），复现
+  `onScrollGeometryChange` 的 `contentOffset.y + contentInsets.top` 口径：
+  12pt 阈值抑制抖动、偏移 < 40pt 无条件显示、向下滚隐藏、向上滚显示，四条语义逐条保留。
+  iOS 18 及以上仍走原 API，macOS 侧不受影响
+
+> ⚠️ **iOS 17 未经实机 / 模拟器测试。** 已验证的是编译期 API 可用性，
+> 运行时的滚动隐藏行为需要在 iOS 17 设备上确认。
+
 ## [1.3.2] - 2026-09-10
 
 ### 📱 兼容性
