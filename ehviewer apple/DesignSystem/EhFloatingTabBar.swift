@@ -227,7 +227,7 @@ private struct EhScrollOffsetProbe: UIViewRepresentable {
             }
             // 绑定时补一次基线：视图带着已有滚动位置重新出现时，
             // 不能拿「上一次留下的偏移」当基准去算位移。
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.report(isInitial: true)
