@@ -42,10 +42,13 @@ jobs:
           xcodebuild -version
 
       - name: Resolve Swift packages
-        run: xcodebuild -resolvePackageDependencies -project "$PROJECT" -scheme "$SCHEME"
+        run: |
+          set -o pipefail
+          xcodebuild -resolvePackageDependencies -project "$PROJECT" -scheme "$SCHEME" 2>&1 | tee -a /tmp/build.log
 
       - name: Archive (unsigned)
         run: |
+          set -o pipefail
           xcodebuild archive \
             -project "$PROJECT" \
             -scheme "$SCHEME" \
@@ -55,7 +58,21 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
-            COMPILER_INDEX_STORE_ENABLE=NO
+            COMPILER_INDEX_STORE_ENABLE=NO 2>&1 | tee -a /tmp/build.log
+
+      # 失败时把真正的报错行写成 check-run 注解。
+      # 日志本身要登录才能下载，注解是公开可读的，便于外部直接定位。
+      - name: Surface build errors
+        if: failure()
+        run: |
+          echo "=== 构建失败，关键错误行 ==="
+          grep -nE "error:|fatal error:|The following build commands failed|ARCHIVE FAILED|BUILD FAILED|xcodebuild: error" /tmp/build.log 2>/dev/null \
+            | head -10 | while IFS= read -r line; do
+                echo "$line"
+                echo "::error::$line"
+              done
+          echo "=== Xcode 版本 ==="
+          xcodebuild -version
 
       - name: Package unsigned IPA
         run: |
