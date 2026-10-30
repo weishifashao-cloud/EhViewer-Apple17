@@ -1,0 +1,108 @@
+# ────────────────────────────────────────────────────────────
+#  产出未签名 IPA（不需要任何 Secret，也没有 Mac 也能出包）
+#
+#  用法：把本文件所在的仓库 fork 到自己账号 → 推送这个分支 →
+#        Actions 里跑 "Build Unsigned IPA" → 在 Artifacts 下载 EhViewer-unsigned.ipa
+#
+#  和 deploy_ios.yml 的区别：那条是维护者的正式发布流水线，需要 Distribution
+#  证书与 API 密钥；这里只编译不签名，产物交给用户自己的 Apple ID 重签。
+# ────────────────────────────────────────────────────────────
+
+name: Build Unsigned IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ ios17-deployment, main ]
+
+concurrency:
+  group: unsigned-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PROJECT: "ehviewer apple.xcodeproj"
+  SCHEME: "ehviewer apple"
+  ARCHIVE: "build/EhViewer.xcarchive"
+  APP: "build/EhViewer.xcarchive/Products/Applications/ehviewer apple.app"
+
+jobs:
+  ipa:
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 本项目需要 iOS 26 SDK，钉死旧 Xcode 会直接报 "iOS 17.0 is not installed"
+      - name: Select newest Xcode
+        run: |
+          LATEST=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
+          LATEST=${LATEST:-/Applications/Xcode.app}
+          sudo xcode-select -s "$LATEST"
+          xcodebuild -version
+
+      - name: Resolve Swift packages
+        run: xcodebuild -resolvePackageDependencies -project "$PROJECT" -scheme "$SCHEME"
+
+      - name: Archive (unsigned)
+        run: |
+          xcodebuild archive \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -destination "generic/platform=iOS" \
+            -archivePath "$ARCHIVE" \
+            -configuration Release \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          if [ ! -d "$APP" ]; then
+            echo "::error::归档里找不到 .app，实际内容："
+            ls -R build/EhViewer.xcarchive/Products || true
+            exit 1
+          fi
+
+          rm -rf build/Payload build/ipa
+          mkdir -p build/Payload build/ipa
+          cp -R "$APP" build/Payload/
+
+          # 未签名包不需要任何签名材料；残留会让重签工具判断错
+          find build/Payload -name "_CodeSignature" -type d -prune -exec rm -rf {} + 2>/dev/null || true
+          find build/Payload -name "embedded.mobileprovision" -delete 2>/dev/null || true
+          xattr -cr build/Payload 2>/dev/null || true
+
+          # -y 保留符号链接，-X 去掉多余扩展属性
+          (cd build && zip -qryX "ipa/EhViewer-unsigned.ipa" Payload)
+          ls -lh build/ipa/
+
+      # 顺带把「降版本是否真的生效」变成构建日志里的一条硬证据
+      - name: Show MinimumOSVersion
+        run: |
+          echo "主 App："
+          plutil -p "$APP/Info.plist" | grep -i MinimumOSVersion || echo "⚠️ 未读到"
+          echo "Widget 扩展："
+          plutil -p "$APP/PlugIns/EhDownloadWidget.appex/Info.plist" | grep -i MinimumOSVersion || echo "⚠️ 未读到"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: EhViewer-unsigned-ipa
+          path: build/ipa/EhViewer-unsigned.ipa
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Summary
+        if: success()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" << 'EOF'
+          ## 未签名 IPA 已生成
+
+          下载 Artifacts 里的 `EhViewer-unsigned-ipa`，用 Sideloadly / AltStore 以自己的
+          Apple ID 重签安装。未签名包不能直接装到非越狱设备上。
+
+          免费 Apple ID 签出的证书 7 天失效，到期重签即可，App 数据不丢。
+          EOF
